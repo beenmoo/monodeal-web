@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en-us">
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+    <!-- No height=device-height: on an iPhone that's the *portrait* height, which in landscape
+         gives a page taller than the screen - and taps that land away from what's drawn. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+    <title>Monopoly Deal</title>
+    <!-- Opened from the home screen: a full-screen app, its page under the status bar rather
+         than pushed down by it (iOS shifts a pushed-down page's taps off what's drawn). -->
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Monopoly Deal">
+    <meta name="theme-color" content="#1e140c">
+    <link rel="manifest" href="manifest.webmanifest">
+    <style>
+      /* The page never scrolls, zooms or bounces - every touch is the game's. */
+      html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; position: fixed;
+                   overscroll-behavior: none; background: #1e140c;
+                   -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
+      /* The game fills the screen, less the notch and home-indicator strip (Unity can't see
+         those on the web, so they're kept clear here). Laid out for landscape. */
+      #frame { position: fixed; top: env(safe-area-inset-top); right: env(safe-area-inset-right);
+               bottom: env(safe-area-inset-bottom); left: env(safe-area-inset-left); }
+      #unity-canvas { display: block; width: 100%; height: 100%; background: #1e140c; touch-action: none; outline: none; }
+      #loading { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+                 gap: 18px; color: #ffd24d; font: bold 28px system-ui, sans-serif; letter-spacing: 2px; }
+      #loading-bar { width: min(60vw, 420px); height: 10px; border-radius: 5px; background: #3a2a1c; overflow: hidden; }
+      #loading-fill { width: 0%; height: 100%; background: #ffd24d; transition: width 0.2s; }
+      #rotate { display: none; position: fixed; inset: 0; align-items: center; justify-content: center; text-align: center;
+                padding: 24px; background: #1e140c; color: #ffd24d; font: bold 22px system-ui, sans-serif; }
+      /* A phone held upright: ask for landscape. */
+      @media (orientation: portrait) and (max-width: 900px) { #rotate { display: flex; } }
+      /* Touch diagnostics (three-finger tap): where the page got each touch, and its measurements. */
+      #debug { display: none; position: fixed; left: 4px; top: 4px; z-index: 10; pointer-events: none; padding: 6px 8px;
+               background: rgba(0, 0, 0, 0.75); color: #7cff7c; font: 11px/1.35 ui-monospace, monospace; white-space: pre; }
+      .debug-dot { position: fixed; z-index: 10; width: 14px; height: 14px; margin: -7px 0 0 -7px; border-radius: 50%;
+                   background: #ff2d55; border: 2px solid #fff; pointer-events: none; }
+    </style>
+  </head>
+  <body>
+    <div id="frame"><canvas id="unity-canvas" tabindex="-1"></canvas></div>
+    <div id="loading">
+      <div>MONOPOLY DEAL</div>
+      <div id="loading-bar"><div id="loading-fill"></div></div>
+    </div>
+    <div id="rotate">Turn your phone sideways to play.<br>横向きにしてプレイしてください。</div>
+    <div id="debug"></div>
+    <script>
+      // iOS can leave the page scrolled after the phone turns or the keyboard closes, which moves
+      // the game off the spot taps are measured from - so it's always put back.
+      function settle() { window.scrollTo(0, 0); }
+      window.addEventListener("resize", settle);
+      window.addEventListener("orientationchange", () => { settle(); setTimeout(settle, 300); });
+      if (window.visualViewport) {
+        window.visualViewport.addEventListener("resize", settle);
+        window.visualViewport.addEventListener("scroll", settle);
+      }
+
+      // A home-screen app can start before its final size is known: nudge Unity to measure again
+      // once it's running, and after the phone turns.
+      function nudgeResize() {
+        [100, 500, 1500].forEach((ms) => setTimeout(() => window.dispatchEvent(new Event("resize")), ms));
+      }
+      window.addEventListener("orientationchange", nudgeResize);
+
+      // Touch diagnostics, on and off with a three-finger tap: a dot where the page received each
+      // touch, and the sizes the game is laid out by. A screenshot of it shows whether the phone
+      // reports touches in the wrong place or the game reads them wrong.
+      (function () {
+        const panel = document.querySelector("#debug");
+        let on = false, last = "-";
+        function report() {
+          const canvas = document.querySelector("#unity-canvas"), r = canvas.getBoundingClientRect();
+          const frame = getComputedStyle(document.querySelector("#frame"));
+          const vv = window.visualViewport;
+          const round = (n) => Math.round(n * 10) / 10;
+          panel.textContent = [
+            "standalone " + (navigator.standalone === true || matchMedia("(display-mode: standalone), (display-mode: fullscreen)").matches),
+            "window " + innerWidth + "x" + innerHeight + "  screen " + screen.width + "x" + screen.height + "  dpr " + devicePixelRatio,
+            "visual " + (vv ? round(vv.width) + "x" + round(vv.height) + " at " + round(vv.offsetLeft) + "," + round(vv.offsetTop) + " scale " + round(vv.scale) : "-"),
+            "scroll " + scrollX + "," + scrollY + "  safe t" + frame.top + " r" + frame.right + " b" + frame.bottom + " l" + frame.left,
+            "canvas css " + round(r.left) + "," + round(r.top) + " " + round(r.width) + "x" + round(r.height) + "  px " + canvas.width + "x" + canvas.height,
+            "touch " + last,
+          ].join("\n");
+        }
+        window.addEventListener("touchstart", (e) => {
+          if (e.touches.length === 3) {
+            on = !on;
+            panel.style.display = on ? "block" : "none";
+            document.querySelectorAll(".debug-dot").forEach((dot) => dot.remove());
+          }
+          if (!on) return;
+          for (const t of e.changedTouches) {
+            const dot = document.createElement("div");
+            dot.className = "debug-dot";
+            dot.style.left = t.clientX + "px";
+            dot.style.top = t.clientY + "px";
+            document.body.appendChild(dot);
+            setTimeout(() => dot.remove(), 4000);
+            last = round1(t.clientX) + "," + round1(t.clientY);
+          }
+          report();
+        }, { capture: true, passive: true });
+        function round1(n) { return Math.round(n * 10) / 10; }
+        setInterval(() => { if (on) report(); }, 500);
+      })();
+    </script>
+    <script src="Build/8daf5753dacb34e677018789acf46ae4.loader.js"></script>
+    <script>
+      createUnityInstance(document.querySelector("#unity-canvas"), {
+        arguments: [],
+        dataUrl: "Build/1db209c3c758d8d4fb7deb82fcbf127d.data.unityweb",
+        frameworkUrl: "Build/8bf72c67de8f3207c905c1b47ff80772.framework.js.unityweb",
+        codeUrl: "Build/5b6845a6d80d93eadcd2d0f07091a393.wasm.unityweb",
+        streamingAssetsUrl: "StreamingAssets",
+        companyName: "DefaultCompany",
+        productName: "MonoDeal",
+        productVersion: "1.0",
+      }, (progress) => {
+        document.querySelector("#loading-fill").style.width = (100 * progress) + "%";
+      }).then(() => {
+        document.querySelector("#loading").remove();
+        nudgeResize();
+      }).catch((message) => {
+        alert(message);
+      });
+    </script>
+  </body>
+</html>
