@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en-us">
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+    <!-- No height=device-height: on an iPhone that's the *portrait* height, which in landscape
+         gives a page taller than the screen - and taps that land away from what's drawn. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+    <title>Monopoly Deal</title>
+    <!-- Opened from the home screen: a full-screen app, its page under the status bar rather
+         than pushed down by it (iOS shifts a pushed-down page's taps off what's drawn). -->
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Monopoly Deal">
+    <meta name="theme-color" content="#1e140c">
+    <link rel="manifest" href="manifest.webmanifest">
+    <style>
+      /* The page never scrolls, zooms or bounces - every touch is the game's. */
+      html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; position: fixed;
+                   overscroll-behavior: none; background: #1e140c;
+                   -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
+      /* The game fills the screen, less the notch and home-indicator strip (Unity can't see
+         those on the web, so they're kept clear here). Laid out for landscape. */
+      #frame { position: fixed; top: env(safe-area-inset-top); right: env(safe-area-inset-right);
+               bottom: env(safe-area-inset-bottom); left: env(safe-area-inset-left); }
+      #unity-canvas { display: block; width: 100%; height: 100%; background: #1e140c; touch-action: none; outline: none; }
+      #loading { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+                 gap: 18px; color: #ffd24d; font: bold 28px system-ui, sans-serif; letter-spacing: 2px; }
+      #loading-bar { width: min(60vw, 420px); height: 10px; border-radius: 5px; background: #3a2a1c; overflow: hidden; }
+      #loading-fill { width: 0%; height: 100%; background: #ffd24d; transition: width 0.2s; }
+      #rotate { display: none; position: fixed; inset: 0; align-items: center; justify-content: center; text-align: center;
+                padding: 24px; background: #1e140c; color: #ffd24d; font: bold 22px system-ui, sans-serif; }
+      /* A phone held upright: ask for landscape. */
+      @media (orientation: portrait) and (max-width: 900px) { #rotate { display: flex; } }
+      /* Opened inside Instagram, Facebook and the like: their browser can't turn sideways, so ask
+         for the phone's own browser instead. */
+      #inapp { display: none; position: fixed; inset: 0; z-index: 30; flex-direction: column; align-items: center; justify-content: center;
+               gap: 16px; text-align: center; padding: 24px; background: #1e140c; color: #ffd24d; font: bold 20px system-ui, sans-serif; }
+      #inapp small { color: #e8d9b8; font-weight: normal; font-size: 16px; line-height: 1.5; }
+      #inapp a { display: none; padding: 12px 22px; border-radius: 10px; background: #ffd24d; color: #1e140c; text-decoration: none; }
+      #inapp a.here { display: inline; padding: 0; background: none; color: #a8987a; font-weight: normal; font-size: 15px; text-decoration: underline; }
+      /* Touch diagnostics (three-finger tap): where the page got each touch, and its measurements. */
+      #debug { display: none; position: fixed; left: 4px; top: 4px; z-index: 10; pointer-events: none; padding: 6px 8px;
+               background: rgba(0, 0, 0, 0.75); color: #7cff7c; font: 11px/1.35 ui-monospace, monospace; white-space: pre; }
+      .debug-dot { position: fixed; z-index: 10; width: 14px; height: 14px; margin: -7px 0 0 -7px; border-radius: 50%;
+                   background: #ff2d55; border: 2px solid #fff; pointer-events: none; }
+      /* Unity's text box for the phone keyboard (see the script below): along the top, clear of
+         the notch, and - unlike the rest of the page - selectable, so a long press offers Paste. */
+      .unity-keyboard-box { z-index: 20; left: env(safe-area-inset-left) !important; right: env(safe-area-inset-right) !important;
+                            width: auto !important; }
+      .unity-keyboard-box, .unity-keyboard-box * { -webkit-user-select: text; user-select: text; -webkit-touch-callout: default; }
+    </style>
+  </head>
+  <body>
+    <div id="frame"><canvas id="unity-canvas" tabindex="-1"></canvas></div>
+    <div id="loading">
+      <div>MONOPOLY DEAL</div>
+      <div id="loading-bar"><div id="loading-fill"></div></div>
+    </div>
+    <div id="rotate">Turn your phone sideways to play.<br>横向きにしてプレイしてください。</div>
+    <div id="inapp">
+      <div>Open this in your browser to play.<br>ブラウザで開いてプレイしてください。</div>
+      <small>This app's browser can't turn sideways. Tap ••• or ⋮ at the top and choose
+        “Open in external browser”.<br>上の ••• か ⋮ から「外部ブラウザで開く」を選んでください。</small>
+      <a id="inapp-open" href="#">OPEN IN BROWSER</a>
+      <a id="inapp-here" class="here" href="#">Play here anyway</a>
+    </div>
+    <div id="debug"></div>
+    <script>
+      // Instagram, Facebook, TikTok and others open links in their own browser, which stays
+      // upright. ShareLink also leaves a ?join=CODE link in the address there (WebPage.jslib), so
+      // opening the page in the phone's browser still joins the game.
+      window.inAppBrowser = /Instagram|FBAN|FBAV|FB_IAB|FBIOS|Messenger|musical_ly|BytedanceWebview|TikTok|Snapchat|\bLine\//i.test(navigator.userAgent);
+    </script>
+    <script>
+      // iOS can leave the page scrolled after the phone turns or the keyboard closes, which moves
+      // the game off the spot taps are measured from - so it's always put back. Not while typing,
+      // though: then the phone scrolls to keep the text box in view.
+      function typing() {
+        const el = document.activeElement;
+        return !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA");
+      }
+      function settle() { if (!typing()) window.scrollTo(0, 0); }
+      document.addEventListener("focusout", () => setTimeout(settle, 300));
+      window.addEventListener("resize", settle);
+      window.addEventListener("orientationchange", () => { settle(); setTimeout(settle, 300); });
+      if (window.visualViewport) {
+        window.visualViewport.addEventListener("resize", settle);
+        window.visualViewport.addEventListener("scroll", settle);
+      }
+
+      // A home-screen app can start before its final size is known: nudge Unity to measure again
+      // once it's running, and after the phone turns.
+      function nudgeResize() {
+        [100, 500, 1500].forEach((ms) => setTimeout(() => window.dispatchEvent(new Event("resize")), ms));
+      }
+      window.addEventListener("orientationchange", nudgeResize);
+
+      // Offline play: the service worker (sw.js) keeps this version of the game, so it opens
+      // with no connection next time. Started once the game's running - the files it saves were
+      // just downloaded, so they come from the browser's cache rather than over again - and the
+      // browser's asked not to clear them to make room.
+      function keepForOffline() {
+        if (!("serviceWorker" in navigator)) return;
+        navigator.serviceWorker.register("sw.js").catch(() => {});
+        if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
+      }
+
+      // Typing on a phone, Unity adds a real text box to the page (with an OK button) for the
+      // keyboard to type into - pinned to the foot of the page, which is just where the keyboard
+      // goes, and an iPhone doesn't push the page up to make room. So it's moved to the top of
+      // what's visible, where it can be seen, and long-pressed to paste.
+      (function () {
+        let box = null;
+        function place() {
+          if (!box || !box.isConnected) return;
+          box.style.top = (window.visualViewport ? window.visualViewport.offsetTop : 0) + "px";
+          box.style.bottom = "auto";
+        }
+        new MutationObserver(() => {
+          const found = [...document.body.children].find((el) => el.tagName === "DIV" && !el.id && el.querySelector("input, textarea"));
+          if (found && found !== box) {
+            box = found;
+            box.classList.add("unity-keyboard-box");
+            place();
+          }
+        }).observe(document.body, { childList: true });
+        if (window.visualViewport) {
+          window.visualViewport.addEventListener("resize", place);
+          window.visualViewport.addEventListener("scroll", place);
+        }
+      })();
+
+      // Touch diagnostics, on and off with a three-finger tap: a dot where the page received each
+      // touch, and the sizes the game is laid out by. A screenshot of it shows whether the phone
+      // reports touches in the wrong place or the game reads them wrong.
+      (function () {
+        const panel = document.querySelector("#debug");
+        let on = false, last = "-";
+        function report() {
+          const canvas = document.querySelector("#unity-canvas"), r = canvas.getBoundingClientRect();
+          const frame = getComputedStyle(document.querySelector("#frame"));
+          const vv = window.visualViewport;
+          const round = (n) => Math.round(n * 10) / 10;
+          panel.textContent = [
+            "standalone " + (navigator.standalone === true || matchMedia("(display-mode: standalone), (display-mode: fullscreen)").matches),
+            "window " + innerWidth + "x" + innerHeight + "  screen " + screen.width + "x" + screen.height + "  dpr " + devicePixelRatio,
+            "visual " + (vv ? round(vv.width) + "x" + round(vv.height) + " at " + round(vv.offsetLeft) + "," + round(vv.offsetTop) + " scale " + round(vv.scale) : "-"),
+            "scroll " + scrollX + "," + scrollY + "  safe t" + frame.top + " r" + frame.right + " b" + frame.bottom + " l" + frame.left,
+            "canvas css " + round(r.left) + "," + round(r.top) + " " + round(r.width) + "x" + round(r.height) + "  px " + canvas.width + "x" + canvas.height,
+            "touch " + last,
+          ].join("\n");
+        }
+        window.addEventListener("touchstart", (e) => {
+          if (e.touches.length === 3) {
+            on = !on;
+            panel.style.display = on ? "block" : "none";
+            document.querySelectorAll(".debug-dot").forEach((dot) => dot.remove());
+          }
+          if (!on) return;
+          for (const t of e.changedTouches) {
+            const dot = document.createElement("div");
+            dot.className = "debug-dot";
+            dot.style.left = t.clientX + "px";
+            dot.style.top = t.clientY + "px";
+            document.body.appendChild(dot);
+            setTimeout(() => dot.remove(), 4000);
+            last = round1(t.clientX) + "," + round1(t.clientY);
+          }
+          report();
+        }, { capture: true, passive: true });
+        function round1(n) { return Math.round(n * 10) / 10; }
+        setInterval(() => { if (on) report(); }, 500);
+      })();
+    </script>
+    <script src="Build/ec68cda2c6ba59f21842b8d0fd0f08bd.loader.js"></script>
+    <script>
+      function startGame() {
+        createUnityInstance(document.querySelector("#unity-canvas"), {
+          arguments: [],
+          dataUrl: "Build/996d37e0e70017276a2ab719a2fb07e3.data.unityweb",
+          frameworkUrl: "Build/092a3c56920f2cce9024c75dac9a44a0.framework.js.unityweb",
+          codeUrl: "Build/7aad258e9d773d03c507fd35d3c72c2a.wasm.unityweb",
+          streamingAssetsUrl: "StreamingAssets",
+          companyName: "DefaultCompany",
+          productName: "MonoDeal",
+          productVersion: "1.0",
+        }, (progress) => {
+          document.querySelector("#loading-fill").style.width = (100 * progress) + "%";
+        }).then(() => {
+          document.querySelector("#loading").remove();
+          nudgeResize();
+          keepForOffline();
+        }).catch((message) => {
+          alert(message);
+        });
+      }
+
+      // In an app's own browser, offer the phone's browser first (the game isn't loaded unless
+      // they'd rather play here). Android can be sent straight there; so can iOS 17 and later,
+      // through Safari's x-safari- address - older iPhones just have the app's menu.
+      if (window.inAppBrowser) {
+        const open = document.querySelector("#inapp-open");
+        if (/Android/i.test(navigator.userAgent)) {
+          open.href = "intent://" + location.host + location.pathname + location.search +
+            "#Intent;scheme=https;action=android.intent.action.VIEW;S.browser_fallback_url=" + encodeURIComponent(location.href) + ";end";
+          open.style.display = "inline-block";
+        } else if (/iPhone|iPad|iPod/i.test(navigator.userAgent)) {
+          open.href = "x-safari-" + location.href;
+          open.style.display = "inline-block";
+        }
+        document.querySelector("#inapp-here").addEventListener("click", (e) => {
+          e.preventDefault();
+          document.querySelector("#inapp").style.display = "none";
+          startGame();
+        });
+        document.querySelector("#inapp").style.display = "flex";
+      } else {
+        startGame();
+      }
+    </script>
+  </body>
+</html>

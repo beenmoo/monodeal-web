@@ -1,0 +1,10 @@
+{
+  "name": "Monopoly Deal",
+  "short_name": "Monopoly Deal",
+  "start_url": "./",
+  "scope": "./",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#1e140c",
+  "theme_color": "#1e140c"
+}
